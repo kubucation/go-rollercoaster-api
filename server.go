@@ -7,194 +7,186 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 type Coaster struct {
-	ID           int    `json:"id"`
 	Name         string `json:"name"`
 	Manufacturer string `json:"manufacturer"`
+	ID           string `json:"id"`
 	InPark       string `json:"inPark"`
 	Height       int    `json:"height"`
 }
 
-func newHandlers() *handlers {
-	return &handlers{
-		coasters: map[int]Coaster{},
+type coasterHandlers struct {
+	sync.Mutex
+	store map[string]Coaster
+}
+
+func (h *coasterHandlers) coasters(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case "GET":
+		h.get(w, r)
+		return
+	case "POST":
+		h.post(w, r)
+		return
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		w.Write([]byte("method not allowed"))
+		return
 	}
 }
 
-type handlers struct {
-	coasters map[int]Coaster
-	sync.Mutex
-}
+func (h *coasterHandlers) get(w http.ResponseWriter, r *http.Request) {
+	coasters := make([]Coaster, len(h.store))
 
-func (h *handlers) getCoastersHandler(w http.ResponseWriter, r *http.Request) {
 	h.Lock()
-	coasterList := make([]Coaster, len(h.coasters))
 	i := 0
-	for _, item := range h.coasters {
-		coasterList[i] = item
+	for _, coaster := range h.store {
+		coasters[i] = coaster
 		i++
 	}
 	h.Unlock()
 
-	w.Header().Add("content-type", "application/json")
-	asJson, err := json.MarshalIndent(coasterList, "", "  ")
+	jsonBytes, err := json.Marshal(coasters)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
 	}
 
+	w.Header().Add("content-type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(asJson)
+	w.Write(jsonBytes)
 }
 
-func (h *handlers) getCoasterHandler(w http.ResponseWriter, r *http.Request) {
-	pathSegments := strings.Split(r.URL.Path, "/")
-	if len(pathSegments) < 3 {
+func (h *coasterHandlers) getRandomCoaster(w http.ResponseWriter, r *http.Request) {
+	ids := make([]string, len(h.store))
+	h.Lock()
+	i := 0
+	for id := range h.store {
+		ids[i] = id
+		i++
+	}
+	defer h.Unlock()
+
+	var target string
+	if len(ids) == 0 {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	} else if len(ids) == 1 {
+		target = ids[0]
+	} else {
+		rand.Seed(time.Now().UnixNano())
+		target = ids[rand.Intn(len(ids))]
+	}
+
+	w.Header().Add("location", fmt.Sprintf("/coasters/%s", target))
+	w.WriteHeader(http.StatusFound)
+}
+
+func (h *coasterHandlers) getCoaster(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(r.URL.String(), "/")
+	if len(parts) != 3 {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
-	h.Lock()
-	defer h.Unlock()
-	id, err := strconv.Atoi(pathSegments[2])
-	coaster, ok := h.coasters[id]
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+	if parts[2] == "random" {
+		h.getRandomCoaster(w, r)
 		return
 	}
 
+	h.Lock()
+	coaster, ok := h.store[parts[2]]
+	h.Unlock()
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
 
+	jsonBytes, err := json.Marshal(coaster)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(err.Error()))
+	}
+
 	w.Header().Add("content-type", "application/json")
-	asJson, err := json.MarshalIndent(coaster, "", "  ")
+	w.WriteHeader(http.StatusOK)
+	w.Write(jsonBytes)
+}
+
+func (h *coasterHandlers) post(w http.ResponseWriter, r *http.Request) {
+	bodyBytes, err := ioutil.ReadAll(r.Body)
+	defer r.Body.Close()
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		w.Write([]byte(err.Error()))
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	w.Write(asJson)
-}
-
-func (h *handlers) randomCoaster(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	h.Lock()
-	coasterList := make([]Coaster, len(h.coasters))
-	i := 0
-	for _, item := range h.coasters {
-		coasterList[i] = item
-		i++
-	}
-	h.Unlock()
-
-	var coaster Coaster
-	if len(coasterList) == 0 {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	} else if len(coasterList) == 1 {
-		coaster = coasterList[0]
-	} else {
-		rand.Seed(time.Now().UnixNano())
-		coaster = coasterList[rand.Intn(len(coasterList)-1)]
-	}
-
-	w.Header().Add("location", fmt.Sprintf("/coasters/%d", coaster.ID))
-	w.WriteHeader(http.StatusFound)
-}
-
-func (h *handlers) postCoastersHandler(w http.ResponseWriter, r *http.Request) {
 	ct := r.Header.Get("content-type")
 	if ct != "application/json" {
-		w.Header().Add("Accept", "application/json")
 		w.WriteHeader(http.StatusUnsupportedMediaType)
-		w.Write([]byte(fmt.Sprintf("status 415, unsupported content type, want 'application/json', got '%s'", ct)))
-		return
-	}
-
-	asJson, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte(err.Error()))
+		w.Write([]byte(fmt.Sprintf("need content-type 'application/json', but got '%s'", ct)))
 		return
 	}
 
 	var coaster Coaster
-	err = json.Unmarshal(asJson, &coaster)
+	err = json.Unmarshal(bodyBytes, &coaster)
 	if err != nil {
 		w.WriteHeader(http.StatusBadRequest)
 		w.Write([]byte(err.Error()))
 		return
 	}
 
-	coaster.ID = time.Now().Nanosecond()
+	coaster.ID = fmt.Sprintf("%d", time.Now().UnixNano())
 	h.Lock()
-	h.coasters[coaster.ID] = coaster
-	h.Unlock()
+	h.store[coaster.ID] = coaster
+	defer h.Unlock()
 }
 
-func (h *handlers) coastersHandler(w http.ResponseWriter, r *http.Request) {
-	switch r.Method {
-	case "GET":
-		h.getCoastersHandler(w, r)
-		return
-	case "POST":
-		h.postCoastersHandler(w, r)
-		return
-	default:
-		w.WriteHeader(http.StatusMethodNotAllowed)
+func newCoasterHandlers() *coasterHandlers {
+	return &coasterHandlers{
+		store: map[string]Coaster{},
 	}
+
 }
 
 type adminPortal struct {
 	password string
 }
 
-func (a *adminPortal) adminHandler(w http.ResponseWriter, r *http.Request) {
+func newAdminPortal() *adminPortal {
+	password := os.Getenv("ADMIN_PASSWORD")
+	if password == "" {
+		panic("required env var ADMIN_PASSWORD not set")
+	}
+
+	return &adminPortal{password: password}
+}
+
+func (a adminPortal) handler(w http.ResponseWriter, r *http.Request) {
 	user, pass, ok := r.BasicAuth()
 	if !ok || user != "admin" || pass != a.password {
 		w.WriteHeader(http.StatusUnauthorized)
-		w.Write([]byte(fmt.Sprintf("status 401 - unauthorized")))
+		w.Write([]byte("401 - unauthorized"))
 		return
 	}
 
-	w.Header().Add("content-type", "text/html")
-	w.WriteHeader(http.StatusOK)
-	w.Write([]byte(fmt.Sprint("<html><h1>Super Secret Admin Portal</h1></html>")))
-}
-
-func newAdminPortal() *adminPortal {
-	pwd := os.Getenv("ADMIN_PASSWORD")
-	if pwd == "" {
-		fmt.Println("no admin password (env var ADMIN_PASSWORD) set")
-		os.Exit(1)
-	}
-
-	return &adminPortal{
-		password: pwd,
-	}
+	w.Write([]byte("<html><h1>Super secret admin portal</h1></html>"))
 }
 
 func main() {
-	handlers := newHandlers()
 	admin := newAdminPortal()
-	http.HandleFunc("/admin", admin.adminHandler)
-	http.HandleFunc("/coasters", handlers.coastersHandler)
-	http.HandleFunc("/coasters/", handlers.getCoasterHandler)
-	http.HandleFunc("/coasters/random", handlers.randomCoaster)
-	http.ListenAndServe(":8080", nil)
+	coasterHandlers := newCoasterHandlers()
+	http.HandleFunc("/coasters", coasterHandlers.coasters)
+	http.HandleFunc("/coasters/", coasterHandlers.getCoaster)
+	http.HandleFunc("/admin", admin.handler)
+	err := http.ListenAndServe(":8080", nil)
+	if err != nil {
+		panic(err)
+	}
 }
