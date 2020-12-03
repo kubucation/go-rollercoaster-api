@@ -4,7 +4,7 @@
 
 * No third-party packages/dependencies
 * Used in the "How to use curl as an HTTP Client" video
-* Building of this API available as a video (coming soon)
+* Building of this API available as a [video](https://www.youtube.com/watch?v=2v11Ym6Ct9Q)
 
 ## Requirements
 
